@@ -34,3 +34,4 @@ Servidor de senalizacion WebSocket (Socket.IO) para video y compartir pantalla. 
 - El estado (usuarios y flags de media) vive en memoria y se pierde al reiniciar. Si defines `REDIS_URL`, se usara el adapter de pub/sub para multiinstancia.
 - Con `AUTH_SECRET`, el servidor exige token en el handshake (`socket.handshake.auth.token` o header `Authorization`) y toma `userId/displayName` del payload; sin `AUTH_SECRET` usa lo que envia el cliente en `join:room`.
 # backend_meet_video
+# backend_meet_video
