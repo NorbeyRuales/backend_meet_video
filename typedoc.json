@@ -1,0 +1,7 @@
+{
+  "entryPoints": ["api/index.ts"],
+  "out": "docs",
+  "tsconfig": "tsconfig.json",
+  "plugin": [],
+  "readme": "none"
+}

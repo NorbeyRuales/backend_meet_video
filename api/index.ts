@@ -7,7 +7,12 @@ import { Redis } from "ioredis";
 import jwt from "jsonwebtoken";
 import "dotenv/config";
 
-const origins =
+/**
+ * List of allowed origins for CORS.
+ * Taken from environment variable ORIGIN or defaults for client URLs.
+ * @type {string[]}
+ */
+const origins: string[] =
   process.env.ORIGIN
     ?.split(",")
     .map((s) => s.trim())
@@ -16,9 +21,16 @@ const origins =
     "https://plataforma-de-video-conferencias.vercel.app",
   ];
 
-const MAX_ROOM_SIZE = Number(process.env.MAX_ROOM_SIZE ?? 10);
-const PORT = Number(process.env.PORT ?? 9000);
+/** Maximum number of users allowed in a room. */
+const MAX_ROOM_SIZE: number = Number(process.env.MAX_ROOM_SIZE ?? 10);
+
+/** Port on which the signaling server will listen. */
+const PORT: number = Number(process.env.PORT ?? 9000);
+
+/** JWT secret key for authentication (optional). */
 const AUTH_SECRET = process.env.AUTH_SECRET;
+
+/** Redis URL for using Redis adapter in production (optional). */
 const REDIS_URL = process.env.REDIS_URL;
 
 const app = express();
@@ -38,7 +50,6 @@ app.use((_req, res) => {
 });
 
 const server = http.createServer(app);
-
 const io = new Server(server, {
   cors: {
     origin: origins,
@@ -55,6 +66,9 @@ if (REDIS_URL) {
   subClient.on("error", (err) => console.error("Redis sub client error", err));
 }
 
+/**
+ * Represents a user connected in a room.
+ */
 type RoomUser = {
   socketId: string;
   userId: string;
@@ -62,28 +76,45 @@ type RoomUser = {
   photoURL?: string;
 };
 
+/**
+ * Represents the media state (audio/video/screen-share) of a user.
+ */
 type MediaState = {
   audioEnabled: boolean;
   videoEnabled: boolean;
   isScreenSharing?: boolean;
 };
 
+/** Stores active rooms and their users by roomId → socketId → user info. */
 const rooms: Record<string, Record<string, RoomUser>> = {};
+
+/** Stores media states per user by roomId → socketId → media state. */
 const mediaStates: Record<string, Record<string, MediaState>> = {};
 
+/**
+ * Utility type guard to check if a value is a non-empty string.
+ * @param value - the value to check
+ * @returns whether the value is a non-empty string
+ */
 const isNonEmptyString = (value: unknown): value is string =>
   typeof value === "string" && value.trim().length > 0;
 
+/**
+ * Represents a user provided by the client (before JWT verification).
+ */
 type AuthedUser = {
   userId: string;
   displayName: string;
   photoURL?: string;
 };
 
+/**
+ * Extracts a bearer token from typical header or auth fields.
+ * @param raw - raw header or auth value
+ * @returns the token string or empty string if invalid
+ */
 const bearerToken = (raw: unknown): string => {
-  if (Array.isArray(raw)) {
-    raw = raw[0];
-  }
+  if (Array.isArray(raw)) raw = raw[0];
   if (typeof raw !== "string") return "";
   const value = raw.trim();
   if (value.toLowerCase().startsWith("bearer ")) {
@@ -92,6 +123,15 @@ const bearerToken = (raw: unknown): string => {
   return value;
 };
 
+/**
+ * Validates and resolves a user using JWT token if provided.
+ * If AUTH_SECRET is not defined, returns the provided user as-is.
+ * On invalid or missing token, emits "auth:error" and returns null.
+ *
+ * @param socket - the client socket
+ * @param provided - the user info provided by client
+ * @returns authenticated user info or null if invalid
+ */
 const resolveUser = (
   socket: Socket,
   provided: AuthedUser
@@ -119,14 +159,20 @@ const resolveUser = (
       };
     }
     const userId =
-      payload.uid || payload.sub || payload.userId || payload.user_id || provided.userId;
+      (payload as any).uid ||
+      (payload as any).sub ||
+      (payload as any).userId ||
+      (payload as any).user_id ||
+      provided.userId;
+
     const displayName =
-      payload.name ||
-      payload.displayName ||
-      payload.username ||
-      payload.email ||
+      (payload as any).name ||
+      (payload as any).displayName ||
+      (payload as any).username ||
+      (payload as any).email ||
       provided.displayName;
-    const photoURL = (payload as Record<string, unknown>).picture as string | undefined;
+
+    const photoURL = (payload as any).picture as string | undefined;
 
     if (!isNonEmptyString(userId) || !isNonEmptyString(displayName)) {
       socket.emit("auth:error", "Invalid token payload");
@@ -145,13 +191,31 @@ const resolveUser = (
   }
 };
 
+/**
+ * Main connection handler for Socket.IO.
+ * Manages all events for rooms, signaling, media state, chat, etc.
+ */
 io.on("connection", (socket) => {
   console.log(`User connected: ${socket.id}`);
 
+  /**
+   * Event: 'join:room'
+   * Triggered when a user tries to join a room.
+   * Validates inputs, auth, room size, and notifies peers.
+   *
+   * @param roomId - room identifier
+   * @param userId - user identifier
+   * @param displayName - user display name
+   * @param photoURL - optional user photo URL
+   */
   socket.on(
     "join:room",
     (roomId: string, userId: string, displayName: string, photoURL?: string) => {
-      if (!isNonEmptyString(roomId) || !isNonEmptyString(userId) || !isNonEmptyString(displayName)) {
+      if (
+        !isNonEmptyString(roomId) ||
+        !isNonEmptyString(userId) ||
+        !isNonEmptyString(displayName)
+      ) {
         socket.emit("room:error", "Missing roomId, userId or displayName");
         return;
       }
@@ -161,7 +225,9 @@ io.on("connection", (socket) => {
         return;
       }
 
-      const currentCount = rooms[roomId] ? Object.keys(rooms[roomId]).length : 0;
+      const currentCount = rooms[roomId]
+        ? Object.keys(rooms[roomId]).length
+        : 0;
       if (currentCount >= MAX_ROOM_SIZE) {
         socket.emit("room:full");
         return;
@@ -209,13 +275,29 @@ io.on("connection", (socket) => {
           photoURL: resolvedUser.photoURL,
         });
 
-      console.log(`User ${socket.id} joined room ${roomId}. Total users: ${Object.keys(rooms[roomId]).length}`);
+      console.log(
+        `User ${socket.id} joined room ${roomId}. Total users: ${Object.keys(
+          rooms[roomId]
+        ).length}`
+      );
     }
   );
 
+  /**
+   * Event: 'signal'
+   * Forward WebRTC signaling data to target peer.
+   *
+   * @param data - signaling payload (to, from, roomId, signal data)
+   */
   socket.on("signal", (data: { to: string; from: string; signal: unknown; roomId: string }) => {
     const { to, from, signal, roomId } = data;
-    if (!signal || !isNonEmptyString(to) || !isNonEmptyString(from) || !isNonEmptyString(roomId)) return;
+    if (
+      !signal ||
+      !isNonEmptyString(to) ||
+      !isNonEmptyString(from) ||
+      !isNonEmptyString(roomId)
+    )
+      return;
     const senderInfo = rooms[roomId]?.[from];
 
     io.to(to).emit("signal", {
@@ -228,6 +310,12 @@ io.on("connection", (socket) => {
     });
   });
 
+  /**
+   * Event: 'media:state'
+   * Updates and broadcasts a user's media state (audio/video).
+   *
+   * @param data - containing roomId and optional audio/video toggles
+   */
   socket.on("media:state", (data: { roomId: string; audioEnabled?: boolean; videoEnabled?: boolean }) => {
     const { roomId, audioEnabled, videoEnabled } = data;
     if (!isNonEmptyString(roomId)) return;
@@ -252,6 +340,13 @@ io.on("connection", (socket) => {
     });
   });
 
+  /**
+   * Event: 'screen:share'
+   * Broadcasts user's screen sharing state to others in the room.
+   *
+   * @param roomId - ID of the room
+   * @param sharing - boolean indicating if screen sharing is active
+   */
   socket.on("screen:share", ({ roomId, sharing }: { roomId: string; sharing: boolean }) => {
     if (!isNonEmptyString(roomId)) return;
 
@@ -269,7 +364,9 @@ io.on("connection", (socket) => {
     });
   });
 
-  // Legacy screen-share events kept for compatibility (safe to remove when clients migrate to screen:share)
+  /**
+   * Legacy compatibility events for screen sharing.
+   */
   socket.on("screen:share-start", ({ roomId }) => {
     if (!isNonEmptyString(roomId)) return;
 
@@ -298,7 +395,13 @@ io.on("connection", (socket) => {
     });
   });
 
-  socket.on("screen:signal", ({ to, from, signal, roomId }) => {
+  /**
+   * Event: 'screen:signal'
+   * Forward screen-sharing related WebRTC data to target peer.
+   *
+   * @param data - contains to, from, signal and roomId
+   */
+  socket.on("screen:signal", ({ to, from, signal, roomId }: { to: string; from: string; signal: unknown; roomId: string }) => {
     if (!isNonEmptyString(roomId) || !isNonEmptyString(to) || !isNonEmptyString(from) || !signal) return;
 
     io.to(to).emit("screen:signal", {
@@ -307,6 +410,12 @@ io.on("connection", (socket) => {
     });
   });
 
+  /**
+   * Event: 'leave:room'
+   * Handles user manually leaving the room.
+   *
+   * @param roomId - ID of the room to leave
+   */
   socket.on("leave:room", (roomId: string) => {
     if (!isNonEmptyString(roomId)) return;
     if (rooms[roomId]?.[socket.id]) {
@@ -324,6 +433,12 @@ io.on("connection", (socket) => {
     }
   });
 
+  /**
+   * Event: 'chat:message'
+   * Broadcasts a chat message to all users in the room.
+   *
+   * @param data - contains roomId, userId and message content
+   */
   socket.on("chat:message", (data: { roomId: string; userId: string; message: string }) => {
     const { roomId, userId, message } = data;
     if (!isNonEmptyString(roomId) || !isNonEmptyString(userId) || !isNonEmptyString(message)) return;
@@ -337,6 +452,10 @@ io.on("connection", (socket) => {
     io.to(roomId).emit("chat:message", outgoingMessage);
   });
 
+  /**
+   * Event: 'disconnect'
+   * Cleanup rooms and media states when a user disconnects.
+   */
   socket.on("disconnect", () => {
     for (const roomId in rooms) {
       if (rooms[roomId][socket.id]) {
@@ -355,6 +474,9 @@ io.on("connection", (socket) => {
   });
 });
 
+/**
+ * Starts the HTTP + WebSocket signaling server on the configured port.
+ */
 server.listen(PORT, () => {
   console.log(`Video signaling server running on port ${PORT}`);
 });
